@@ -1,0 +1,84 @@
+name: Codex Security demo
+on:
+  workflow_dispatch:
+    inputs:
+      upload_sarif:
+        description: Upload to GitHub Code Security (requires entitlement)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: codex-security-demo
+  cancel-in-progress: false
+jobs:
+  security:
+    name: Codex Security scan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: security-demo
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Install pinned runtimes with mise
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          tool_versions: |
+            node 24.4.0
+            python 3.13.5
+            pnpm 10.13.1
+      - name: Install trusted CLI outside repository
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p codex-security-cli
+          cd codex-security-cli
+          echo '{"private":true}' > package.json
+          mise exec -- pnpm add --save-exact --ignore-scripts @openai/codex-security@0.4.0
+          mise exec -- ./node_modules/.bin/codex-security --version
+      - name: Check out synthetic fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Scan synthetic repository
+        env:
+          OPENAI_API_KEY: ${{ secrets.CODEX_SECURITY_API_KEY }}
+          CODEX_SECURITY_STATE_DIR: ${{ runner.temp }}/codex-security-state
+        run: |
+          set -euo pipefail
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo '::error::Missing security-demo environment secret CODEX_SECURITY_API_KEY'
+            exit 1
+          fi
+          echo "Scan started at $(date -u +%FT%TZ); revision $GITHUB_SHA"
+          mise exec -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" scan . \
+            --auth api-key --workers 1 --max-cost 5 --max-time-hours 0.1 \
+            --fail-on-severity high --output-dir "$RUNNER_TEMP/scan-results" \
+            --json > "$RUNNER_TEMP/scan-result.json"
+      - name: Export SARIF when a completed scan exists
+        id: export
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/scan-results/scan-manifest.json" ]; then
+            mise exec -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" export "$RUNNER_TEMP/scan-results" \
+              --export-format sarif --source-root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/codex-security.sarif"
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload SARIF to GitHub Code Security
+        if: always() && inputs.upload_sarif && steps.export.outputs.available == 'true'
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
+        with:
+          sarif_file: ${{ runner.temp }}/codex-security.sarif
+          category: codex-security-demo
+      - name: Preserve report and SARIF
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: codex-security-demo-results
+          path: |
+            ${{ runner.temp }}/scan-result.json
+            ${{ runner.temp }}/codex-security.sarif
+          if-no-files-found: ignore
+          retention-days: 7
