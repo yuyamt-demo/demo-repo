@@ -35,8 +35,8 @@ jobs:
           mkdir -p codex-security-cli
           cd codex-security-cli
           echo '{"private":true}' > package.json
-          mise exec -- pnpm add --save-exact --ignore-scripts @openai/codex-security@0.4.0
-          mise exec -- ./node_modules/.bin/codex-security --version
+          mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- pnpm add --save-exact --ignore-scripts @openai/codex-security@0.4.0
+          mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- ./node_modules/.bin/codex-security --version
       - name: Check out synthetic fixture
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -53,7 +53,7 @@ jobs:
             exit 1
           fi
           echo "Scan started at $(date -u +%FT%TZ); revision $GITHUB_SHA"
-          mise exec -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" scan . \
+          mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" scan . \
             --auth api-key --workers 1 --max-cost 5 --max-time-hours 0.1 \
             --fail-on-severity high --output-dir "$RUNNER_TEMP/scan-results" \
             --json > "$RUNNER_TEMP/scan-result.json"
@@ -62,7 +62,7 @@ jobs:
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/scan-results/scan-manifest.json" ]; then
-            mise exec -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" export "$RUNNER_TEMP/scan-results" \
+            mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" export "$RUNNER_TEMP/scan-results" \
               --export-format sarif --source-root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/codex-security.sarif"
             echo 'available=true' >> "$GITHUB_OUTPUT"
           fi
