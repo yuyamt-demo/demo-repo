@@ -5,7 +5,11 @@ on:
       upload_sarif:
         description: Upload to GitHub Code Security (requires entitlement)
         type: boolean
-        default: false
+        default: true
+      pr_number:
+        description: PR number to scan (empty scans main)
+        type: string
+        default: ""
 permissions:
   contents: read
 concurrency:
@@ -21,6 +25,9 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      statuses: write
+      pull-requests: read
+      actions: read
     steps:
       - name: Install pinned runtimes with mise
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
@@ -37,12 +44,33 @@ jobs:
           echo '{"private":true}' > package.json
           mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- pnpm add --save-exact --ignore-scripts @openai/codex-security@0.4.0
           mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- ./node_modules/.bin/codex-security --version
+      - name: Resolve exact scan target
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          sha="$GITHUB_SHA"
+          ref="$GITHUB_REF"
+          if [ -n "$PR_NUMBER" ]; then
+            [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || exit 1
+            gh pr view "$PR_NUMBER" --json isCrossRepository,state --jq 'select(.isCrossRepository == false and .state == "OPEN") | .state' | grep -qx OPEN
+            sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
+            ref="refs/pull/$PR_NUMBER/head"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          gh api "repos/$GH_REPO/statuses/$sha" -f state=pending -f context='Codex Security gate' -f description='Scanning this exact commit' -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
       - name: Check out synthetic fixture
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ steps.target.outputs.sha }}
           persist-credentials: false
           fetch-depth: 0
       - name: Scan synthetic repository
+        id: scan
         env:
           OPENAI_API_KEY: ${{ secrets.CODEX_SECURITY_API_KEY }}
           CODEX_SECURITY_STATE_DIR: ${{ runner.temp }}/codex-security-state
@@ -55,7 +83,7 @@ jobs:
           echo "Scan started at $(date -u +%FT%TZ); revision $GITHUB_SHA"
           mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" scan . \
             --auth api-key --mode standard --max-cost 5 --verbose \
-            --fail-on-severity high --output-dir "$RUNNER_TEMP/scan-results" \
+            --fail-on-severity low --output-dir "$RUNNER_TEMP/scan-results" \
             --json > "$RUNNER_TEMP/scan-result.json"
       - name: Export SARIF when a completed scan exists
         id: export
@@ -72,6 +100,8 @@ jobs:
         with:
           sarif_file: ${{ runner.temp }}/codex-security.sarif
           category: codex-security-demo
+          ref: ${{ steps.target.outputs.ref }}
+          sha: ${{ steps.target.outputs.sha }}
       - name: Preserve report and SARIF
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -82,3 +112,18 @@ jobs:
             ${{ runner.temp }}/codex-security.sarif
           if-no-files-found: ignore
           retention-days: 7
+      - name: Publish merge gate for scanned commit
+        if: always() && steps.target.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SCAN_SHA: ${{ steps.target.outputs.sha }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          state=failure
+          description='Security findings or scan error: review run logs'
+          if [ "$SCAN_OUTCOME" = success ]; then
+            state=success
+            description='Scan passed: no findings at Low or above'
+          fi
+          gh api "repos/$GH_REPO/statuses/$SCAN_SHA" -f state="$state" -f context='Codex Security gate' -f description="$description" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
