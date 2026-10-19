@@ -15,7 +15,7 @@ jobs:
   security:
     name: Codex Security scan
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     environment: security-demo
     permissions:
