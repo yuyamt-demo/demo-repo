@@ -7,9 +7,9 @@ on:
         type: boolean
         default: true
       pr_number:
-        description: PR number to scan (empty scans main)
+        description: PR number to scan (required; diff only)
         type: string
-        default: ""
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -20,7 +20,7 @@ jobs:
     name: Codex Security scan
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     environment: security-demo
     permissions:
       contents: read
@@ -54,14 +54,17 @@ jobs:
           set -euo pipefail
           sha="$GITHUB_SHA"
           ref="$GITHUB_REF"
+          [ -n "$PR_NUMBER" ] || { echo "PR number is required for diff-only scans"; exit 1; }
           if [ -n "$PR_NUMBER" ]; then
             [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || exit 1
             gh pr view "$PR_NUMBER" --json isCrossRepository,state --jq 'select(.isCrossRepository == false and .state == "OPEN") | .state' | grep -qx OPEN
             sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
             ref="refs/pull/$PR_NUMBER/head"
+            base=$(gh pr view "$PR_NUMBER" --json baseRefOid --jq .baseRefOid)
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
           gh api "repos/$GH_REPO/statuses/$sha" -f state=pending -f context='Codex Security gate' -f description='Scanning this exact commit' -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
       - name: Check out synthetic fixture
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -73,6 +76,8 @@ jobs:
         id: scan
         env:
           OPENAI_API_KEY: ${{ secrets.CODEX_SECURITY_API_KEY }}
+          BASE_SHA: ${{ steps.target.outputs.base }}
+          HEAD_SHA: ${{ steps.target.outputs.sha }}
           CODEX_SECURITY_STATE_DIR: ${{ runner.temp }}/codex-security-state
         run: |
           set -euo pipefail
@@ -80,8 +85,10 @@ jobs:
             echo '::error::Missing security-demo environment secret CODEX_SECURITY_API_KEY'
             exit 1
           fi
-          echo "Scan started at $(date -u +%FT%TZ); revision $GITHUB_SHA"
+          base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          echo "Diff scan started at $(date -u +%FT%TZ); base $base; head $HEAD_SHA"
           mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" scan . \
+            --diff "$base" --head "$HEAD_SHA" \
             --auth api-key --mode standard --max-cost 5 --verbose \
             --fail-on-severity low --output-dir "$RUNNER_TEMP/scan-results" \
             --json > "$RUNNER_TEMP/scan-result.json"
