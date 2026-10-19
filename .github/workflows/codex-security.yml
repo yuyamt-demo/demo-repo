@@ -54,7 +54,7 @@ jobs:
           fi
           echo "Scan started at $(date -u +%FT%TZ); revision $GITHUB_SHA"
           mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" scan . \
-            --auth api-key --workers 1 --max-cost 5 --max-time-hours 0.1 \
+            --auth api-key --mode standard --max-cost 5 --verbose \
             --fail-on-severity high --output-dir "$RUNNER_TEMP/scan-results" \
             --json > "$RUNNER_TEMP/scan-result.json"
       - name: Export SARIF when a completed scan exists
