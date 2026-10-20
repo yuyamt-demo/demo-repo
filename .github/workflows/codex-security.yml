@@ -104,14 +104,19 @@ jobs:
             --auth api-key --mode standard --max-cost 10 --verbose \
             --fail-on-severity low --output-dir "$RUNNER_TEMP/scan-results" \
             --json > "$RUNNER_TEMP/scan-result.json"
-      - name: スキャン結果がある場合にSARIFを出力
+      - name: 完了したスキャンのSARIFだけを出力
         id: export
         if: always()
         run: |
-          if [ -f "$RUNNER_TEMP/scan-results/scan-manifest.json" ]; then
+          set -euo pipefail
+          manifest_path="$RUNNER_TEMP/scan-results/scan-manifest.json"
+          if [ -f "$manifest_path" ] &&
+            jq -e '.scan.status == "completed" and (.scan.sealedAt | type == "string" and length > 0)' "$manifest_path" > /dev/null; then
             mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" export "$RUNNER_TEMP/scan-results" \
               --export-format sarif --source-root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/codex-security.sarif"
             echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'スキャンが完了・確定していないため、SARIF登録をスキップします。'
           fi
       - name: SARIFをGitHub Securityへ登録
         if: always() && inputs.upload_sarif && steps.export.outputs.available == 'true'
@@ -146,3 +151,4 @@ jobs:
             description='Low以上の指摘なし：スキャン成功'
           fi
           gh api "repos/$GH_REPO/statuses/$SCAN_SHA" -f state="$state" -f context='Codex Security gate' -f description="$description" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+
