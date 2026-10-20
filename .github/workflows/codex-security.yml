@@ -101,7 +101,7 @@ jobs:
           mise exec node@24.4.0 python@3.13.5 pnpm@10.13.1 -- "$RUNNER_TEMP/codex-security-cli/node_modules/.bin/codex-security" scan . \
             --diff "$base" --head "$HEAD_SHA" \
             --scan-prompt-file "$scan_prompt_path" \
-            --auth api-key --mode standard --max-cost 5 --verbose \
+            --auth api-key --mode standard --max-cost 10 --verbose \
             --fail-on-severity low --output-dir "$RUNNER_TEMP/scan-results" \
             --json > "$RUNNER_TEMP/scan-result.json"
       - name: スキャン結果がある場合にSARIFを出力
